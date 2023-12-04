@@ -1,0 +1,71 @@
+from jetbot import Camera
+import ipywidgets.widgets as widgets
+from IPython.display import display
+import traitlets
+from jetbot import bgr8_to_jpeg
+import torch
+import torchvision.models as models
+from utils import preprocess
+import torch.nn.functional as F
+import time
+from jetbot import Robot
+
+# 모델 초기화 및 미리 학습된 가중치 로드
+model = models.resnet18(pretrained=True)
+model.fc = torch.nn.Linear(model.fc.in_features, 2)
+model.load_state_dict(torch.load('my_model.pth'))
+device = torch.device('cuda')
+model = model.to(device)
+model.eval()  # 모델을 평가 모드로 설정
+
+# 카메라 초기화
+camera = Camera.instance(width=224, height=224)
+image = widgets.Image(format='jpeg', width=224, height=224)
+display(image)
+
+# 카메라 업데이트 콜백 함수 정의
+def update(change):
+    global robot
+    x = change['new']
+    
+    try:
+        # 이미지 전처리 및 모델 추론
+        x = preprocess(x)
+        x = x.to(device)
+        y = model(x.unsqueeze(0))  # 배치 차원 추가
+        y = F.softmax(y, dim=1)
+        
+        prob_circle = float(y.flatten()[1])
+        prob_square = float(y.flatten()[0])
+        
+        # 결과에 따라 동작 수행
+        if prob_circle > 0.6:
+            robot.set_motors(1, 1)
+            robot.right(0.5)
+            time.sleep(1.78)
+            robot.stop()
+    
+    except Exception as e:
+        print(f"Error: {e}")
+
+    # 다시 카메라 업데이트를 요청
+    time.sleep(0.001)
+
+# 카메라 업데이트 콜백 등록
+camera.observe(update, names='value')
+camera_link = traitlets.dlink((camera, 'value'), (image, 'value'), transform=bgr8_to_jpeg)
+
+# 로봇 인스턴스 생성
+robot = Robot()
+
+# 무한 루프를 통해 계속해서 업데이트
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    # 프로그램 종료 시 카메라 정지 및 해제
+    camera.unobserve(update, names='value')
+    camera_link.unlink()
+    camera.stop()
+    robot.stop()
+    print("Program terminated.")
